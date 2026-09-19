@@ -1,0 +1,77 @@
+# claude-model-router configuration
+#
+# Copy to ~/.claude-model-router/config.toml and edit, then run:
+#   claude-model-router --config ~/.claude-model-router/config.toml
+
+upstream = "https://api.anthropic.com"
+host = "127.0.0.1"
+port = 8787
+log = "~/.claude-model-router/decisions.jsonl"
+
+# Named tiers. A tier name is what the policy decides; these are the model IDs
+# it resolves to. Keep them as concrete versioned IDs, not aliases -- aliases
+# move when Anthropic ships a release, and you want routing to be reproducible.
+[tiers]
+cheap = "claude-haiku-4-5"
+mid = "claude-sonnet-5"
+premium = "claude-opus-5"
+
+[policy]
+# Master switch. false = observe only: requests are forwarded untouched, but
+# the full policy still runs -- Jev included -- and every decision is logged
+# with what *would* have been chosen (look for "observe:" reasons and the
+# `observe: true` field in decisions.jsonl). Read the log for a session or
+# two; when the calls look right, flip this to true (or just restart with
+# --enable). Nothing else needs to change.
+enabled = false
+
+# Decide once per session (or per subagent) and hold the choice. This is what
+# avoids paying a cold prompt cache on every turn after a model switch.
+sticky = true
+
+# --- Subagents: the only place Jev decides ---------------------------------
+#
+# A subagent starts at a delegation boundary (nothing cached to invalidate)
+# and delegated tasks genuinely differ in difficulty, so this is where a
+# classifier earns its keep. The router classifies each subagent once (sticky
+# holds it for the subagent's lifetime); a low-margin verdict, timeout, or
+# router error falls back to subagent_tier. Requires TYPESAFE_API_KEY -- put
+# it in .env next to where you run this, or ~/.claude-model-router/.env.
+subagent_router = "jev"
+
+# Static fallback tier for subagents, and the whole rule when
+# subagent_router = "none".
+subagent_tier = "cheap"
+
+# --- Main conversation: left alone, always ---------------------------------
+#
+# The main thread's prompt cache is the most valuable one, and a mid-session
+# model switch re-reads the whole conversation uncached -- which can cost more
+# than routing saves. main_tier stays unset and main_router stays false: the
+# proxy never rewrites the model you (or /model) chose for the main thread.
+main_router = false
+# main_tier = "mid"
+
+# Exact incoming model IDs that must never be rewritten. Anything here is
+# forwarded untouched no matter what the rest of the policy says.
+never_reroute = []
+
+# Router for the main conversation. Independent of subagent_router.
+#   "none" -- deterministic rules only (default; main thread stays untouched)
+#   "head" -- local cue matching, no network, no vendor
+#   "jev"  -- TypeSafe Jev; requires TYPESAFE_API_KEY
+router = "none"
+
+# Hard budget for a router call. On timeout the request falls through to the
+# deterministic policy. Never let the router break a session. Measured Jev
+# latency varies widely (0.3-2.0s observed), so keep generous headroom: this
+# call happens once per subagent at a delegation boundary, where latency is
+# invisible. 400ms timed out on every call.
+router_timeout_ms = 3000
+
+# A router verdict must beat this margin before it is used. A close call defers
+# to the deterministic rule instead. The margin is distance past the nearest
+# tier threshold in normalised score units ([-1, 1]): a decisive cheap call
+# (score ~ -0.5) shows margin ~0.22, so 0.25 was silently rejecting almost
+# everything. 0.15 keeps the gate but lets confident verdicts through.
+router_min_margin = 0.15
