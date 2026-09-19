@@ -8,3 +8,4 @@ build/
 .env
 *.local.toml
 *.jsonl
+node_modules/
