@@ -7,10 +7,10 @@ import { Policy } from "./policy.js";
 import { createServer } from "./server.js";
 
 const USAGE = `
-claude-model-router — local routing proxy for Claude Code
+claude-jev-model-router — local routing proxy for Claude Code
 
 Usage
-  claude-model-router [options]
+  claude-jev-model-router [options]
 
 Options
   -c, --config <path>        TOML config file (see default.toml)
@@ -36,7 +36,7 @@ Environment
 
 Usage with Claude Code
   # 1. start the proxy (in its own terminal)
-  claude-model-router --config ~/.claude-model-router/config.toml
+  claude-jev-model-router --config ~/.claude-model-router/config.toml
 
   # 2. point Claude Code at it
   ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
@@ -179,7 +179,7 @@ function banner(config: Config, router: string, envFile: string | null): string 
 
   const lines = [
     "",
-    `  claude-model-router  ${baseUrl}`,
+    `  claude-jev-model-router  ${baseUrl}`,
     `  mode     ${mode}`,
     `  router   ${router}`,
     `  subagent -> ${subagentNote}`,
@@ -232,7 +232,7 @@ async function main(): Promise<void> {
     router = buildRouter({ config });
   } catch (error) {
     process.stderr.write(
-      `claude-model-router: ${error instanceof Error ? error.message : String(error)}\n`,
+      `claude-jev-model-router: ${error instanceof Error ? error.message : String(error)}\n`,
     );
     process.exitCode = 1;
     return;
@@ -252,7 +252,7 @@ async function main(): Promise<void> {
     server.listen(config.port, config.host, resolve);
   }).catch((error: unknown) => {
     process.stderr.write(
-      `claude-model-router: cannot listen on ${config.host}:${config.port} — ` +
+      `claude-jev-model-router: cannot listen on ${config.host}:${config.port} — ` +
         `${error instanceof Error ? error.message : String(error)}\n`,
     );
     process.exitCode = 1;

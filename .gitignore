@@ -9,3 +9,4 @@ build/
 *.local.toml
 *.jsonl
 node_modules/
+docs

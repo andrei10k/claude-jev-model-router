@@ -75,3 +75,24 @@ router_timeout_ms = 3000
 # (score ~ -0.5) shows margin ~0.22, so 0.25 was silently rejecting almost
 # everything. 0.15 keeps the gate but lets confident verdicts through.
 router_min_margin = 0.15
+
+# --- Tool-set gates (deterministic, run before the router) ------------------
+#
+# The request's tool list classifies what the subagent can do to your repo:
+#   readonly  -- no Write/Edit/NotebookEdit, no Bash/PowerShell
+#   mutating  -- has Write/Edit but nothing else
+#   exec      -- has Bash/PowerShell but no mutation tools
+#   mixed     -- mutation plus exec or other tools
+#
+# readonly agents are capped at subagent_tier without consulting the router:
+# they physically cannot modify anything, however the prompt is worded.
+#
+# For mutating/mixed agents, downgrading to cheap requires a wider margin than
+# router_min_margin: a wrong cheap verdict on a repo-writing agent is the most
+# expensive mistake this proxy can make. A codebase-wide rename still clears
+# it easily (margin ~0.4); vague "fix the failing test" style prompts do not.
+router_min_margin_mutation = 0.3
+
+# Fallback tier when the router is unavailable or below margin. "mid" for
+# mutation-capable agents (fail toward caution); subagent_tier for the rest.
+# Hardcode via policy below if you want to override -- see policy.ts.

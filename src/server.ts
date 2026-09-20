@@ -117,6 +117,8 @@ async function handleInference(
     model_out: modelOut,
     body_bytes: ctx.bodyBytes,
     tool_count: ctx.toolCount,
+    tool_class: ctx.toolClass,
+    max_tokens: ctx.maxTokens,
     turn_index: ctx.turnIndex,
     stream: ctx.stream,
     ...logFields,

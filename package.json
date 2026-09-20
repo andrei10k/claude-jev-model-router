@@ -1,14 +1,38 @@
 {
-  "name": "claude-model-router",
+  "name": "claude-jev-model-router",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "description": "Local routing proxy for Claude Code: sticky, agent-aware model selection with a Jev-ready classifier seam.",
+  "description": "Local proxy for Claude Code that routes each subagent to the model the task needs, using TypeSafe's Jev. Main conversation untouched.",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "proxy",
+    "model-routing",
+    "cost-optimization",
+    "typesafe",
+    "jev"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andrei10k/claude-jev-model-router.git"
+  },
+  "bugs": {
+    "url": "https://github.com/andrei10k/claude-jev-model-router/issues"
+  },
+  "homepage": "https://github.com/andrei10k/claude-jev-model-router#readme",
+  "files": [
+    "dist",
+    "default.toml",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=20"
   },
   "bin": {
-    "claude-model-router": "dist/index.js"
+    "claude-jev-model-router": "dist/index.js"
   },
   "scripts": {
     "dev": "tsx src/index.ts",
@@ -17,7 +41,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run typecheck && npm run test"
+    "check": "npm run typecheck && npm run test",
+    "prepublishOnly": "npm run check && npm run build"
   },
   "dependencies": {
     "smol-toml": "^1.3.1",

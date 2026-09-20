@@ -7,9 +7,16 @@ import { isSubagent, stickyKey, type RequestContext } from "./context.js";
  *
  * 1. Protected or exotic model -> untouched.
  * 2. Session already decided   -> hold it.
- * 3. Subagent request          -> subagent_router if set, else subagentTier.
+ * 3. Subagent request          -> tool-set gates, then subagent_router or subagentTier.
  * 4. Main conversation         -> only if mainRouter or mainTier is set (off by default).
  * 5. Otherwise                 -> untouched.
+ *
+ * Subagent tool-set gates run before any classification:
+ * - read-only tool set  -> capped at the cheap tier. An agent without mutation
+ *   or exec tools cannot change anything, so the prompt cannot make it harder.
+ * - mutation or mixed   -> Jev may still decide, but a downgrade to cheap needs
+ *   a wider margin (router_min_margin_mutation): the cost of a wrong cheap
+ *   verdict on a repo-writing agent is higher than on a read-only one.
  *
  * Observe mode (enabled = false) runs all of this — router calls included —
  * but applies nothing. Every decision is logged with what would have happened.
@@ -142,34 +149,62 @@ export class Policy {
     // genuinely differ in difficulty. Low margin, timeout or error falls back
     // to the static tier.
     if (isSubagent(ctx)) {
+      // Read-only agents (no mutation, no exec tools) cannot modify the repo.
+      // Whatever the delegation prompt says, the work cannot be more than a
+      // lookup, so skip the router and cap at the cheap tier.
+      if (policy.subagentTier && ctx.toolClass === "readonly") {
+        return this.settle({
+          ctx,
+          tier: policy.subagentTier,
+          resolved: resolveTier(this.config, policy.subagentTier),
+          source: "rule",
+          reason: `read-only tool set (${ctx.toolCount} tools), capped at '${policy.subagentTier}'`,
+          modelIn,
+          observe,
+        });
+      }
+
       if (policy.subagentRouter !== "none" && this.router.name !== "none") {
         const verdict = await this.consultRouter(ctx);
-        if (
-          verdict.tier !== null &&
-          verdict.margin !== null &&
-          verdict.margin >= policy.routerMinMargin
-        ) {
-          return this.settle({
-            ctx,
-            tier: verdict.tier,
-            resolved: resolveTier(this.config, verdict.tier),
-            source: "router",
-            reason:
-              `router '${this.router.name}' chose '${verdict.tier}' at margin ` +
-              `${verdict.margin.toFixed(2)} for a subagent`,
-            modelIn,
-            margin: verdict.margin,
-            routerMs: verdict.ms,
-            observe,
-          });
+        if (verdict.tier !== null && verdict.margin !== null) {
+          // A downgrade to cheap on an agent with mutation tools needs more
+          // confidence than usual: a wrong cheap verdict there can rewrite the
+          // repo. Upgrades keep the normal bar.
+          const mutationRisk = ctx.toolClass === "mutating" || ctx.toolClass === "mixed";
+          const downgrade = verdict.tier === "cheap" && mutationRisk;
+          const requiredMargin = downgrade ? policy.routerMinMarginMutation : policy.routerMinMargin;
+          if (verdict.margin >= requiredMargin) {
+            return this.settle({
+              ctx,
+              tier: verdict.tier,
+              resolved: resolveTier(this.config, verdict.tier),
+              source: "router",
+              reason:
+                `router '${this.router.name}' chose '${verdict.tier}' at margin ` +
+                `${verdict.margin.toFixed(2)} for a subagent` +
+                (downgrade
+                  ? ` (mutation tools, downgrades need ${policy.routerMinMarginMutation})`
+                  : ""),
+              modelIn,
+              margin: verdict.margin,
+              routerMs: verdict.ms,
+              observe,
+            });
+          }
         }
         if (policy.subagentTier) {
+          // Fail-open tier: for mutation-capable agents the cautious default is
+          // mid (falling back to cheap there is how a wrong edit happens).
+          const mutationRisk = ctx.toolClass === "mutating" || ctx.toolClass === "mixed";
+          const fallbackTier = mutationRisk ? "mid" : (policy.subagentTier ?? "mid");
           return this.settle({
             ctx,
-            tier: policy.subagentTier,
-            resolved: resolveTier(this.config, policy.subagentTier),
+            tier: fallbackTier,
+            resolved: resolveTier(this.config, fallbackTier),
             source: "rule",
-            reason: "work delegated to a subagent (router verdict below margin or unavailable)",
+            reason: mutationRisk
+              ? `work delegated to a mutation-capable subagent (router verdict below margin or unavailable), cautious default 'mid'`
+              : "work delegated to a subagent (router verdict below margin or unavailable)",
             modelIn,
             margin: verdict.margin,
             routerMs: verdict.ms,

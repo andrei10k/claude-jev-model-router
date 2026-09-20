@@ -4,7 +4,6 @@ import { RouterError, type Classification, type TierRouter } from "../src/classi
 import { defaultConfig, type Config, type PolicyConfig } from "../src/config.js";
 import type { RequestContext } from "../src/context.js";
 import { familyOf, Policy } from "../src/policy.js";
-
 class SpyRouter implements TierRouter {
   readonly name = "head" as const;
   calls = 0;
@@ -41,6 +40,8 @@ function makeContext(overrides: Partial<RequestContext> = {}): RequestContext {
     turnIndex: 0,
     bodyBytes: 0,
     toolCount: 0,
+    toolClass: "mixed",
+    maxTokens: null,
     stream: true,
     ...overrides,
   };
@@ -338,7 +339,9 @@ describe("Subagent routing", () => {
       router,
     );
 
-    const decision = await policy.decide(makeContext({ agentId: "agent-1" }));
+    const decision = await policy.decide(
+      makeContext({ agentId: "agent-1", toolClass: "exec", toolCount: 3 }),
+    );
 
     expect(decision.source).toBe("rule");
     expect(decision.modelOut).toBe("claude-haiku-4-5");
@@ -352,7 +355,9 @@ describe("Subagent routing", () => {
       router,
     );
 
-    const decision = await policy.decide(makeContext({ agentId: "agent-1" }));
+    const decision = await policy.decide(
+      makeContext({ agentId: "agent-1", toolClass: "exec", toolCount: 3 }),
+    );
 
     expect(decision.source).toBe("rule");
     expect(decision.modelOut).toBe("claude-haiku-4-5");
@@ -381,6 +386,114 @@ describe("Subagent routing", () => {
     const decision = await policy.decide(makeContext({ agentId: "agent-1" }));
 
     expect(router.calls).toBe(0);
+    expect(decision.source).toBe("rule");
+    expect(decision.modelOut).toBe("claude-haiku-4-5");
+  });
+
+  it("caps read-only subagents at the cheap tier without a router call", async () => {
+    const router = new SpyRouter({ tier: "premium", margin: 0.9, probabilities: {} });
+    const policy = new Policy(makeConfig({ subagentRouter: "head" }), router);
+
+    const decision = await policy.decide(
+      makeContext({ agentId: "agent-1", toolClass: "readonly", toolCount: 4 }),
+    );
+
+    expect(router.calls).toBe(0);
+    expect(decision.source).toBe("rule");
+    expect(decision.modelOut).toBe("claude-haiku-4-5");
+    expect(decision.reason).toContain("read-only tool set");
+  });
+
+  it("caps read-only subagents even when the router is disabled", async () => {
+    const router = new SpyRouter({ tier: "mid", margin: 0.9, probabilities: {} });
+    const policy = new Policy(makeConfig({ subagentRouter: "none" }), router);
+
+    const decision = await policy.decide(
+      makeContext({ agentId: "agent-1", toolClass: "readonly", toolCount: 4 }),
+    );
+
+    expect(decision.source).toBe("rule");
+    expect(decision.modelOut).toBe("claude-haiku-4-5");
+  });
+
+  it("requires the wider mutation margin before downgrading a mutating subagent to cheap", async () => {
+    // Margin 0.22 clears the normal gate (0.15) but not the mutation gate (0.30).
+    const router = new SpyRouter({ tier: "cheap", margin: 0.22, probabilities: {} });
+    const policy = new Policy(
+      makeConfig({ subagentRouter: "head", subagentTier: "cheap" }),
+      router,
+    );
+
+    const decision = await policy.decide(
+      makeContext({ agentId: "agent-1", toolClass: "mutating", toolCount: 5 }),
+    );
+
+    expect(router.calls).toBe(1);
+    expect(decision.source).toBe("rule");
+    expect(decision.modelOut).toBe("claude-sonnet-5");
+    expect(decision.reason).toContain("mutation-capable");
+  });
+
+  it("lets a confident cheap verdict through for a mutating subagent", async () => {
+    // A codebase-wide rename: mechanical signal dominates, margin ~0.4.
+    const router = new SpyRouter({ tier: "cheap", margin: 0.4, probabilities: {} });
+    const policy = new Policy(
+      makeConfig({ subagentRouter: "head", subagentTier: "cheap" }),
+      router,
+    );
+
+    const decision = await policy.decide(
+      makeContext({ agentId: "agent-1", toolClass: "mutating", toolCount: 5 }),
+    );
+
+    expect(decision.source).toBe("router");
+    expect(decision.modelOut).toBe("claude-haiku-4-5");
+    expect(decision.reason).toContain("mutation tools");
+  });
+
+  it("keeps the normal margin for upgrades of mutating subagents", async () => {
+    // premium verdict on a mutating agent: upgrade, normal gate applies.
+    const router = new SpyRouter({ tier: "premium", margin: 0.2, probabilities: {} });
+    const policy = new Policy(
+      makeConfig({ subagentRouter: "head", subagentTier: "cheap" }),
+      router,
+    );
+
+    const decision = await policy.decide(
+      makeContext({ agentId: "agent-1", toolClass: "mutating", toolCount: 5 }),
+    );
+
+    expect(decision.source).toBe("router");
+    expect(decision.modelOut).toBe("claude-opus-5");
+  });
+
+  it("falls mutating subagents back to mid when the router is unavailable", async () => {
+    const router = new SpyRouter(null, true);
+    const policy = new Policy(
+      makeConfig({ subagentRouter: "head", subagentTier: "cheap" }),
+      router,
+    );
+
+    const decision = await policy.decide(
+      makeContext({ agentId: "agent-1", toolClass: "mutating", toolCount: 5 }),
+    );
+
+    expect(decision.source).toBe("rule");
+    expect(decision.modelOut).toBe("claude-sonnet-5");
+    expect(decision.reason).toContain("cautious default 'mid'");
+  });
+
+  it("keeps the static tier for read-only fallback even with a router error", async () => {
+    const router = new SpyRouter(null, true);
+    const policy = new Policy(
+      makeConfig({ subagentRouter: "head", subagentTier: "cheap" }),
+      router,
+    );
+
+    const decision = await policy.decide(
+      makeContext({ agentId: "agent-1", toolClass: "exec", toolCount: 3 }),
+    );
+
     expect(decision.source).toBe("rule");
     expect(decision.modelOut).toBe("claude-haiku-4-5");
   });

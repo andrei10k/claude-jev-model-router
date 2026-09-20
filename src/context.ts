@@ -16,6 +16,44 @@ export const PARENT_AGENT_HEADER = "x-claude-code-parent-agent-id";
 /** Cap on the turn text handed to a classifier. */
 export const MAX_TURN_CHARS = 4000;
 
+/** Tools that can modify the repository. Their presence raises the bar for downgrades. */
+const MUTATION_TOOLS = new Set(["write", "edit", "notebookedit"]);
+
+/** Tools that can execute commands. Their absence (with no mutation tools) marks read-only agents. */
+const EXEC_TOOLS = new Set(["bash", "powershell"]);
+
+/** How the request's tool list classifies: what this subagent can do to the repo. */
+export type ToolSetClass = "readonly" | "mutating" | "exec" | "mixed" | "empty";
+
+export function classifyTools(tools: unknown): { toolClass: ToolSetClass; toolCount: number } {
+  if (!Array.isArray(tools) || tools.length === 0) return { toolClass: "empty", toolCount: 0 };
+
+  let mutating = false;
+  let exec = false;
+  let other = false;
+  let count = 0;
+  for (const entry of tools) {
+    count += 1;
+    if (typeof entry !== "object" || entry === null) continue;
+    const name = (entry as Record<string, unknown>)["name"];
+    if (typeof name !== "string") continue;
+    const lower = name.toLowerCase();
+    if (MUTATION_TOOLS.has(lower)) mutating = true;
+    else if (EXEC_TOOLS.has(lower)) exec = true;
+    else other = true;
+  }
+
+  let toolClass: ToolSetClass;
+  // "mixed" (mutation-capable) requires Write/Edit/NotebookEdit. Bash alone
+  // does NOT qualify: read-only agents like Explore carry Bash for grep, and
+  // treating them as mutation-capable would force them onto mid.
+  if (mutating) toolClass = "mixed";
+  else if (exec) toolClass = "exec";
+  else toolClass = "readonly";
+
+  return { toolClass, toolCount: count };
+}
+
 export interface RequestContext {
   sessionId: string;
   agentId: string | null;
@@ -25,6 +63,8 @@ export interface RequestContext {
   turnIndex: number;
   bodyBytes: number;
   toolCount: number;
+  toolClass: ToolSetClass;
+  maxTokens: number | null;
   stream: boolean;
 }
 
@@ -92,8 +132,9 @@ export function buildContext(input: BuildContextInput): RequestContext {
   const safeBody = body ?? {};
 
   const { text, index } = latestUserText(safeBody["messages"]);
-  const tools = safeBody["tools"];
+  const { toolClass, toolCount } = classifyTools(safeBody["tools"]);
   const model = safeBody["model"];
+  const maxTokensRaw = safeBody["max_tokens"];
 
   return {
     sessionId: headerValue(headers, SESSION_HEADER) ?? "",
@@ -103,7 +144,9 @@ export function buildContext(input: BuildContextInput): RequestContext {
     latestUserText: text,
     turnIndex: index,
     bodyBytes,
-    toolCount: Array.isArray(tools) ? tools.length : 0,
+    toolCount,
+    toolClass,
+    maxTokens: typeof maxTokensRaw === "number" && Number.isFinite(maxTokensRaw) ? maxTokensRaw : null,
     stream: safeBody["stream"] === true,
   };
 }
