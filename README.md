@@ -125,6 +125,16 @@ The proxy enforces the parts of Anthropic's [gateway protocol](https://code.clau
 
 One Jev call per subagent, about 400 tokens. That's the entire overhead. Everything else just changes which Claude model the tokens you were already spending bill against. Haiku runs roughly 4–5× cheaper than Sonnet, so any session that delegates exploration work pays for the classifier many times over. If your sessions barely spawn subagents, the observe log will tell you that before you spend anything.
 
+### Measuring your savings
+
+```bash
+claude-jev-model-router savings
+```
+
+Reads the decision log and prints what was saved over the last 1, 7 and 30 days — per route (`sonnet-5 -> haiku-4-5`) and in total. It's cache-aware (cached input at 10%, cache writes at 125%) and prices each rewrite both ways: what the tokens actually cost at the rerouted model vs. what they would have cost at the originally-requested model. Downgrades to a more expensive model count as negative savings, so the number is honest.
+
+Prices default to Anthropic's published list and can be overridden with a JSON file (`claude-jev-model-router savings --pricing my-prices.json`) — useful for max-tier subscription accounting or if Anthropic's prices move.
+
 ## Limits worth knowing
 
 - The classifier sees only the delegation prompt Claude Code writes when spawning the subagent. It can't see your codebase, so difficulty estimates are prompt-level. Prompts that name files ("fix the bug in `parser.ts`") read as simpler than they are; the margin gate catches ambiguous cases and falls back.

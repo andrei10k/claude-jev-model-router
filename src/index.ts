@@ -1,9 +1,13 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+
 import { buildRouter } from "./classify.js";
 import { describeConfig, expandHome, loadConfig, type Config, type RouterName } from "./config.js";
 import { DecisionLog } from "./decisions.js";
 import { loadDotEnv } from "./envfile.js";
 import { Policy } from "./policy.js";
+import { savingsReport } from "./savings.js";
 import { createServer } from "./server.js";
 
 const USAGE = `
@@ -11,8 +15,14 @@ claude-jev-model-router — local routing proxy for Claude Code
 
 Usage
   claude-jev-model-router [options]
+  claude-jev-model-router savings [--log <path>] [--pricing <file>]
 
-Options
+Subcommands
+  savings                    What the tool saved you, per 1/7/30-day windows.
+                             Reads the decision log; --pricing takes a JSON
+                             file of per-million-token USD prices.
+
+Options (proxy)
   -c, --config <path>        TOML config file (see default.toml)
       --port <n>             Listen port                    (default 8787)
       --host <addr>          Listen address                 (default 127.0.0.1)
@@ -208,9 +218,18 @@ function banner(config: Config, router: string, envFile: string | null): string 
 }
 
 async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+
+  // Subcommand dispatch: the first non-flag argument selects a mode.
+  const first = argv.find((arg) => !arg.startsWith("-"));
+  if (first === "savings") {
+    savingsReport(argv.filter((arg) => arg !== "savings"));
+    return;
+  }
+
   let options: CliOptions;
   try {
-    options = parseArgs(process.argv.slice(2));
+    options = parseArgs(argv);
   } catch (error) {
     process.stderr.write(`${String(error instanceof Error ? error.message : error)}\n`);
     process.exitCode = 2;
