@@ -36,12 +36,14 @@ Options (proxy)
       --main-tier <tier>     Tier for the main conversation (default: leave alone)
       --main-router          Let the router decide the main conversation
       --print-config         Print the resolved config and exit
+      --env KEY=VALUE        Set an environment variable inline (repeatable),
+                             e.g. --env TYPESAFE_API_KEY=apikey_...
   -h, --help                 Show this message
 
 Environment
-  TYPESAFE_API_KEY           Required when a router is "jev". Read from the real
-                             environment, or from .env in the working directory,
-                             or from ~/.claude-model-router/.env (in that order).
+  TYPESAFE_API_KEY           Required when a router is "jev". Precedence, highest
+                             first: --env flag > real environment > .env in the
+                             working directory > ~/.claude-model-router/.env.
   TYPESAFE_MODEL             Jev model id         (default jev-1.13.0)
 
 Usage with Claude Code
@@ -68,6 +70,7 @@ interface CliOptions {
   subagentTier: string | null;
   mainTier: string | null;
   mainRouter: boolean | null;
+  envVars: Record<string, string>;
   printConfig: boolean;
   help: boolean;
 }
@@ -85,6 +88,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
     subagentTier: null,
     mainTier: null,
     mainRouter: null,
+    envVars: {},
     printConfig: false,
     help: false,
   };
@@ -151,6 +155,14 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case "--main-router":
         options.mainRouter = true;
         break;
+      case "--env": {
+        const pair = next(index, arg);
+        const eq = pair.indexOf("=");
+        if (eq <= 0) throw new Error(`--env must be KEY=VALUE, got ${JSON.stringify(pair)}`);
+        options.envVars[pair.slice(0, eq).trim()] = pair.slice(eq + 1);
+        index += 1;
+        break;
+      }
       case "--print-config":
         options.printConfig = true;
         break;
@@ -247,6 +259,11 @@ async function main(): Promise<void> {
   try {
     // .env first, so a real exported variable can still override it.
     envFile = loadDotEnv([".env", expandHome("~/.claude-model-router/.env")]);
+    // Inline --env KEY=VALUE flags win over both files (they are the most
+    // explicit form and appear on the command line itself).
+    for (const [key, value] of Object.entries(options.envVars)) {
+      process.env[key] = value;
+    }
     config = applyOverrides(loadConfig({ configPath: options.configPath }), options);
     router = buildRouter({ config });
   } catch (error) {

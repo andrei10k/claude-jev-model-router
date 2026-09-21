@@ -1,6 +1,6 @@
 {
   "name": "claude-jev-model-router",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "type": "module",
   "description": "Local proxy for Claude Code that routes each subagent to the model the task needs, using TypeSafe's Jev. Main conversation untouched.",
   "keywords": [

@@ -47,11 +47,20 @@ Install from npm (Node 20+):
 npm install -g claude-jev-model-router
 ```
 
-Put your TypeSafe API key in `.env` in the directory where you'll run the proxy (or `~/.claude-model-router/.env`, or export `TYPESAFE_API_KEY` in your shell):
+The tool needs your TypeSafe API key. Three ways to provide it, in order of precedence (highest wins):
 
+```bash
+# 1. Inline, on the command line — nothing stored anywhere:
+claude-jev-model-router --env TYPESAFE_API_KEY=apikey_...
+
+# 2. Exported in your shell profile (~/.zshrc) — once, applies everywhere:
+export TYPESAFE_API_KEY=apikey_...
+
+# 3. In a file — ~/.claude-model-router/.env (global, outside any project):
+echo 'TYPESAFE_API_KEY=apikey_...' > ~/.claude-model-router/.env
 ```
-TYPESAFE_API_KEY=apikey_...
-```
+
+A plain `.env` in the directory you run from also works, but the options above keep your key out of project folders. Repeat `--env` as many times as needed; the flag beats the environment, which beats the files.
 
 Run it in observe mode first. Nothing is rewritten, but every decision is logged with what *would* have happened:
 
@@ -134,6 +143,20 @@ claude-jev-model-router savings
 Reads the decision log and prints what was saved over the last 1, 7 and 30 days — per route (`sonnet-5 -> haiku-4-5`) and in total. It's cache-aware (cached input at 10%, cache writes at 125%) and prices each rewrite both ways: what the tokens actually cost at the rerouted model vs. what they would have cost at the originally-requested model. Downgrades to a more expensive model count as negative savings, so the number is honest.
 
 Prices default to Anthropic's published list and can be overridden with a JSON file (`claude-jev-model-router savings --pricing my-prices.json`) — useful for max-tier subscription accounting or if Anthropic's prices move.
+
+### Supplying the key per run
+
+The `--env` flag works for any run and is repeatable, so you can point a single session at a different TypeSafe account without touching files or your shell profile:
+
+```bash
+# test with a second key, just for this run
+claude-jev-model-router --env TYPESAFE_API_KEY=apikey_test... --enable
+
+# combine with other flags
+claude-jev-model-router --env TYPESAFE_API_KEY=apikey_... --env TYPESAFE_MODEL=jev-1.14.0 --enable
+```
+
+`--env` sets the variable for that process only — it is not persisted, and it overrides both files and shell exports for that run.
 
 ## Limits worth knowing
 
