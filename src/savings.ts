@@ -15,9 +15,12 @@ import { homedir } from "node:os";
 
 // family -> USD per million tokens [input, cached_input, cache_write, output]
 const PRICING: Record<string, { input: number; cached: number; write: number; output: number }> = {
+  "claude-opus-5.5": { input: 15, cached: 1.5, write: 18.75, output: 75 },
+  "claude-sonnet-5.5": { input: 3, cached: 0.3, write: 3.75, output: 15 },
+  "claude-haiku-4-5": { input: 0.8, cached: 0.08, write: 1, output: 4 },
+  // Superseded IDs, kept so log entries written before the rename still price.
   "claude-opus-5": { input: 15, cached: 1.5, write: 18.75, output: 75 },
   "claude-sonnet-5": { input: 3, cached: 0.3, write: 3.75, output: 15 },
-  "claude-haiku-4-5": { input: 0.8, cached: 0.08, write: 1, output: 4 },
 };
 
 function priceOf(model: string | null | undefined) {

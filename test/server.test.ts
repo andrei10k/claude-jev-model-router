@@ -175,7 +175,7 @@ describe("relay end to end", () => {
       proxyPort,
       "/v1/messages",
       {
-        model: "claude-opus-5",
+        model: "claude-opus-5.5",
         stream: true,
         system: [{ type: "text", text: "sys", cache_control: { type: "ephemeral" } }],
         messages: [{ role: "user", content: "list the files" }],
@@ -203,7 +203,7 @@ describe("relay end to end", () => {
     await post(
       proxyPort,
       "/v1/messages",
-      { model: "claude-opus-5", messages: [] },
+      { model: "claude-opus-5.5", messages: [] },
       {
         "x-claude-code-agent-id": "agent-2",
         // Hop-by-hop on the client side; must not survive the crossing.
@@ -231,7 +231,7 @@ describe("relay end to end", () => {
 
     expect(entry).toBeDefined();
     expect(entry?.["kind"]).toBe("messages");
-    expect(entry?.["model_in"]).toBe("claude-opus-5");
+    expect(entry?.["model_in"]).toBe("claude-opus-5.5");
     expect(entry?.["model_out"]).toBe("claude-haiku-4-5");
     expect(entry?.["rewritten"]).toBe(true);
     expect(entry?.["tier"]).toBe("cheap");
@@ -248,7 +248,7 @@ describe("relay end to end", () => {
     await post(
       proxyPort,
       "/v1/messages",
-      { model: "claude-sonnet-5", messages: [] },
+      { model: "claude-sonnet-5.5", messages: [] },
       { "x-claude-code-agent-id": "agent-1" },
     );
 
@@ -290,11 +290,11 @@ describe("observe-only mode", () => {
     await post(
       port,
       "/v1/messages",
-      { model: "claude-opus-5", messages: [] },
+      { model: "claude-opus-5.5", messages: [] },
       { "x-claude-code-agent-id": "agent-observe" },
     );
 
-    expect(received[0]?.model).toBe("claude-opus-5");
+    expect(received[0]?.model).toBe("claude-opus-5.5");
 
     const lines = await readLog(observeLog, 1);
     expect(lines[0]?.["rewritten"]).toBe(false);

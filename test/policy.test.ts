@@ -35,7 +35,7 @@ function makeContext(overrides: Partial<RequestContext> = {}): RequestContext {
     sessionId: "session-1",
     agentId: null,
     parentAgentId: null,
-    modelIn: "claude-opus-5",
+    modelIn: "claude-opus-5.5",
     latestUserText: "",
     turnIndex: 0,
     bodyBytes: 0,
@@ -50,8 +50,8 @@ function makeContext(overrides: Partial<RequestContext> = {}): RequestContext {
 describe("familyOf", () => {
   it("recognises aliases, first-party ids and provider-prefixed ids", () => {
     expect(familyOf("opus")).toBe("opus");
-    expect(familyOf("claude-opus-5")).toBe("opus");
-    expect(familyOf("claude-sonnet-5")).toBe("sonnet");
+    expect(familyOf("claude-opus-5.5")).toBe("opus");
+    expect(familyOf("claude-sonnet-5.5")).toBe("sonnet");
     expect(familyOf("us.anthropic.claude-haiku-4-5-v1:0")).toBe("haiku");
     expect(familyOf("claude-fable-5-1")).toBe("fable");
   });
@@ -72,7 +72,7 @@ describe("Policy precedence", () => {
     const decision = await policy.decide(makeContext({ agentId: "agent-1" }));
 
     expect(decision.rewritten).toBe(false);
-    expect(decision.modelOut).toBe("claude-opus-5");
+    expect(decision.modelOut).toBe("claude-opus-5.5");
     expect(decision.tier).toBe("cheap");
     expect(decision.observe).toBe(true);
     expect(decision.reason).toContain("observe: would rewrite");
@@ -81,7 +81,7 @@ describe("Policy precedence", () => {
   it("routes subagent work to the cheap tier", async () => {
     const policy = new Policy(makeConfig(), new SpyRouter(null));
     const decision = await policy.decide(
-      makeContext({ agentId: "agent-1", modelIn: "claude-opus-5" }),
+      makeContext({ agentId: "agent-1", modelIn: "claude-opus-5.5" }),
     );
 
     expect(decision.rewritten).toBe(true);
@@ -103,14 +103,14 @@ describe("Policy precedence", () => {
     const decision = await policy.decide(makeContext());
 
     expect(decision.rewritten).toBe(true);
-    expect(decision.modelOut).toBe("claude-sonnet-5");
+    expect(decision.modelOut).toBe("claude-sonnet-5.5");
   });
 });
 
 describe("Policy exceptions", () => {
   it("never rewrites a model listed in never_reroute", async () => {
     const policy = new Policy(
-      makeConfig({ neverReroute: ["claude-opus-5"] }),
+      makeConfig({ neverReroute: ["claude-opus-5.5"] }),
       new SpyRouter(null),
     );
     const decision = await policy.decide(makeContext({ agentId: "agent-1" }));
@@ -121,7 +121,7 @@ describe("Policy exceptions", () => {
 
   it("never rewrites an extended-context variant", async () => {
     const policy = new Policy(makeConfig(), new SpyRouter(null));
-    const decision = await policy.decide(makeContext({ modelIn: "claude-opus-5[1m]" }));
+    const decision = await policy.decide(makeContext({ modelIn: "claude-opus-5.5[1m]" }));
 
     expect(decision.rewritten).toBe(false);
     expect(decision.reason).toContain("extended-context");
@@ -155,8 +155,8 @@ describe("Policy stickiness", () => {
     const first = await policy.decide(makeContext());
     const second = await policy.decide(makeContext({ turnIndex: 8 }));
 
-    expect(first.modelOut).toBe("claude-sonnet-5");
-    expect(second.modelOut).toBe("claude-sonnet-5");
+    expect(first.modelOut).toBe("claude-sonnet-5.5");
+    expect(second.modelOut).toBe("claude-sonnet-5.5");
     expect(second.source).toBe("sticky");
     expect(second.reason).toContain("session held on 'mid'");
   });
@@ -177,7 +177,7 @@ describe("Policy stickiness", () => {
     await policy.decide(makeContext({ agentId: "agent-1" }));
     const main = await policy.decide(makeContext());
 
-    expect(main.modelOut).toBe("claude-sonnet-5");
+    expect(main.modelOut).toBe("claude-sonnet-5.5");
   });
 
   it("records a decision even when the model is already on tier", async () => {
@@ -185,14 +185,14 @@ describe("Policy stickiness", () => {
       makeConfig({ subagentTier: "premium" }),
       new SpyRouter(null),
     );
-    const first = await policy.decide(makeContext({ agentId: "a", modelIn: "claude-opus-5" }));
+    const first = await policy.decide(makeContext({ agentId: "a", modelIn: "claude-opus-5.5" }));
     expect(first.rewritten).toBe(false);
     expect(first.reason).toContain("already on");
 
     // Tier is still held, so a cheaper incoming model gets pulled back up.
     const second = await policy.decide(makeContext({ agentId: "a", modelIn: "claude-haiku-4-5" }));
     expect(second.source).toBe("sticky");
-    expect(second.modelOut).toBe("claude-opus-5");
+    expect(second.modelOut).toBe("claude-opus-5.5");
   });
 });
 
@@ -212,7 +212,7 @@ describe("Policy router integration", () => {
     const decision = await policy.decide(makeContext({ latestUserText: "why is this flaky?" }));
 
     expect(router.calls).toBe(1);
-    expect(decision.modelOut).toBe("claude-opus-5");
+    expect(decision.modelOut).toBe("claude-opus-5.5");
     expect(decision.source).toBe("router");
   });
 
@@ -225,7 +225,7 @@ describe("Policy router integration", () => {
 
     const decision = await policy.decide(makeContext());
 
-    expect(decision.modelOut).toBe("claude-sonnet-5");
+    expect(decision.modelOut).toBe("claude-sonnet-5.5");
     expect(decision.source).toBe("rule");
   });
 
@@ -238,7 +238,7 @@ describe("Policy router integration", () => {
 
     const decision = await policy.decide(makeContext());
 
-    expect(decision.modelOut).toBe("claude-sonnet-5");
+    expect(decision.modelOut).toBe("claude-sonnet-5.5");
     expect(decision.routerError).toContain("boom");
   });
 
@@ -259,13 +259,13 @@ describe("Policy.modelForTokens", () => {
     const policy = new Policy(makeConfig({ mainTier: "mid" }), router);
 
     await policy.decide(makeContext());
-    expect(policy.modelForTokens(makeContext())).toBe("claude-sonnet-5");
+    expect(policy.modelForTokens(makeContext())).toBe("claude-sonnet-5.5");
     expect(router.calls).toBe(0);
   });
 
   it("passes through when the session has no held tier", () => {
     const policy = new Policy(makeConfig(), new SpyRouter(null));
-    expect(policy.modelForTokens(makeContext())).toBe("claude-opus-5");
+    expect(policy.modelForTokens(makeContext())).toBe("claude-opus-5.5");
   });
 });
 
@@ -281,11 +281,11 @@ describe("Observe mode", () => {
 
     expect(router.calls).toBe(1);
     expect(decision.rewritten).toBe(false);
-    expect(decision.modelOut).toBe("claude-opus-5");
+    expect(decision.modelOut).toBe("claude-opus-5.5");
     expect(decision.tier).toBe("mid");
     expect(decision.observe).toBe(true);
     expect(decision.source).toBe("router");
-    expect(decision.reason).toContain("would rewrite to claude-sonnet-5");
+    expect(decision.reason).toContain("would rewrite to claude-sonnet-5.5");
   });
 
   it("never sticks in observe mode, so every request is judged fresh", async () => {
@@ -307,7 +307,7 @@ describe("Observe mode", () => {
   it("still leaves never_reroute models untouched while observing", async () => {
     const router = new SpyRouter({ tier: "mid", margin: 0.9, probabilities: {} });
     const policy = new Policy(
-      makeConfig({ enabled: false, subagentRouter: "head", neverReroute: ["claude-opus-5"] }),
+      makeConfig({ enabled: false, subagentRouter: "head", neverReroute: ["claude-opus-5.5"] }),
       router,
     );
 
@@ -328,7 +328,7 @@ describe("Subagent routing", () => {
 
     expect(router.calls).toBe(1);
     expect(decision.source).toBe("router");
-    expect(decision.modelOut).toBe("claude-opus-5");
+    expect(decision.modelOut).toBe("claude-opus-5.5");
     expect(decision.reason).toContain("for a subagent");
   });
 
@@ -376,7 +376,7 @@ describe("Subagent routing", () => {
     expect(router.calls).toBe(1);
     expect(first.source).toBe("router");
     expect(second.source).toBe("sticky");
-    expect(second.modelOut).toBe("claude-opus-5");
+    expect(second.modelOut).toBe("claude-opus-5.5");
   });
 
   it("does not consult the router for a subagent when subagent_router is none", async () => {
@@ -430,7 +430,7 @@ describe("Subagent routing", () => {
 
     expect(router.calls).toBe(1);
     expect(decision.source).toBe("rule");
-    expect(decision.modelOut).toBe("claude-sonnet-5");
+    expect(decision.modelOut).toBe("claude-sonnet-5.5");
     expect(decision.reason).toContain("mutation-capable");
   });
 
@@ -464,7 +464,7 @@ describe("Subagent routing", () => {
     );
 
     expect(decision.source).toBe("router");
-    expect(decision.modelOut).toBe("claude-opus-5");
+    expect(decision.modelOut).toBe("claude-opus-5.5");
   });
 
   it("falls mutating subagents back to mid when the router is unavailable", async () => {
@@ -479,7 +479,7 @@ describe("Subagent routing", () => {
     );
 
     expect(decision.source).toBe("rule");
-    expect(decision.modelOut).toBe("claude-sonnet-5");
+    expect(decision.modelOut).toBe("claude-sonnet-5.5");
     expect(decision.reason).toContain("cautious default 'mid'");
   });
 

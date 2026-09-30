@@ -13,8 +13,8 @@ log = "~/.claude-model-router/decisions.jsonl"
 # move when Anthropic ships a release, and you want routing to be reproducible.
 [tiers]
 cheap = "claude-haiku-4-5"
-mid = "claude-sonnet-5"
-premium = "claude-opus-5"
+mid = "claude-sonnet-5.5"
+premium = "claude-opus-5.5"
 
 [policy]
 # Master switch. false = observe only: requests are forwarded untouched, but
