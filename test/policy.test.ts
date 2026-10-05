@@ -42,6 +42,8 @@ function makeContext(overrides: Partial<RequestContext> = {}): RequestContext {
     toolCount: 0,
     toolClass: "mixed",
     maxTokens: null,
+    systemRoleIndexes: [],
+    messageShape: "",
     stream: true,
     ...overrides,
   };
@@ -122,6 +124,84 @@ describe("Policy precedence", () => {
 
     expect(decision.rewritten).toBe(true);
     expect(decision.modelOut).toBe("claude-sonnet-5-5");
+  });
+});
+
+describe("Requests the cheap model cannot serve", () => {
+  it("keeps the caller's model when the body carries a system-role message", async () => {
+    const policy = new Policy(makeConfig({ subagentTier: "cheap" }), new SpyRouter(null));
+    const decision = await policy.decide(
+      makeContext({ agentId: "agent-1", modelIn: "claude-sonnet-5-5", systemRoleIndexes: [0] }),
+    );
+
+    expect(decision.rewritten).toBe(false);
+    expect(decision.modelOut).toBe("claude-sonnet-5-5");
+    expect(decision.tier).toBe("cheap");
+    expect(decision.reason).toContain("rejects a system-role message");
+  });
+
+  it("still rewrites to a model that accepts the body", async () => {
+    const policy = new Policy(makeConfig({ mainTier: "mid" }), new SpyRouter(null));
+    const decision = await policy.decide(
+      makeContext({ modelIn: "claude-opus-5-5", systemRoleIndexes: [0] }),
+    );
+
+    expect(decision.rewritten).toBe(true);
+    expect(decision.modelOut).toBe("claude-sonnet-5-5");
+  });
+
+  it("holds the verdict, so a blocked subagent is not re-judged every turn", async () => {
+    const policy = new Policy(makeConfig({ subagentTier: "cheap" }), new SpyRouter(null));
+    const blocked = () =>
+      makeContext({ agentId: "agent-blocked", modelIn: "claude-sonnet-5-5", systemRoleIndexes: [0] });
+
+    const first = await policy.decide(blocked());
+    expect(first.rewritten).toBe(false);
+
+    const second = await policy.decide(blocked());
+    expect(second.source).toBe("sticky");
+    expect(second.rewritten).toBe(false);
+    expect(second.modelOut).toBe("claude-sonnet-5-5");
+  });
+});
+
+describe("Targets that refused a rewrite", () => {
+  const refusal = JSON.stringify({
+    type: "error",
+    error: { type: "invalid_request_error", message: "`clear_thinking_20251015` requires thinking" },
+    request_id: "req_1",
+  });
+
+  it("waits for the same refusal twice before giving up on a model", async () => {
+    const policy = new Policy(makeConfig({ subagentTier: "cheap" }), new SpyRouter(null));
+
+    const first = await policy.decide(makeContext({ agentId: "agent-a", modelIn: "claude-sonnet-5-5" }));
+    expect(first.modelOut).toBe("claude-haiku-4-5");
+
+    // One refusal is the client's retry working: keep routing.
+    expect(policy.noteRejection("claude-haiku-4-5", 400, refusal)).toBe(false);
+    expect(policy.suspendedTargets).toEqual([]);
+
+    // The identical refusal means the client cannot fix it, so stop.
+    expect(policy.noteRejection("claude-haiku-4-5", 400, refusal)).toBe(true);
+    expect(policy.suspendedTargets).toEqual(["claude-haiku-4-5"]);
+
+    // The next agent keeps the model the caller asked for, and works.
+    const second = await policy.decide(makeContext({ agentId: "agent-b", modelIn: "claude-sonnet-5-5" }));
+    expect(second.rewritten).toBe(false);
+    expect(second.modelOut).toBe("claude-sonnet-5-5");
+    expect(second.reason).toContain("refused an earlier rewritten request");
+  });
+
+  it("ignores statuses that are not the model's fault", async () => {
+    const policy = new Policy(makeConfig({ subagentTier: "cheap" }), new SpyRouter(null));
+
+    expect(policy.noteRejection("claude-haiku-4-5", 429, refusal)).toBe(false);
+    expect(policy.noteRejection("claude-haiku-4-5", 500, refusal)).toBe(false);
+    expect(policy.suspendedTargets).toEqual([]);
+
+    const decision = await policy.decide(makeContext({ agentId: "agent-c", modelIn: "claude-sonnet-5-5" }));
+    expect(decision.rewritten).toBe(true);
   });
 });
 

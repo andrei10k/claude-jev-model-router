@@ -154,7 +154,12 @@ export interface ForwardResult {
   usage: Record<string, number>;
   modelConfirmed: string | null;
   clientAborted: boolean;
+  /** Start of an error response, for the log. Null on success. */
+  errorBody: string | null;
 }
+
+/** Enough of an error body to name the cause without bloating the log. */
+const MAX_ERROR_BYTES = 512;
 
 /** Forward one request upstream and relay the response back, unmodified. */
 export async function forward(options: ForwardOptions): Promise<ForwardResult> {
@@ -175,6 +180,12 @@ export async function forward(options: ForwardOptions): Promise<ForwardResult> {
   const contentType = String(upstreamRes.headers["content-type"] ?? "");
   const scanner = new SseUsageScanner(contentType.includes("text/event-stream"));
 
+  // The upstream body is the only place a rejection explains itself. Keep a
+  // copy of it for the log; the client still gets the untouched bytes.
+  const errorChunks: Buffer[] = [];
+  let errorBytes = 0;
+  const captureError = upstreamRes.statusCode >= 400;
+
   res.writeHead(upstreamRes.statusCode, buildDownstreamHeaders(upstreamRes.headers));
 
   let clientAborted = false;
@@ -186,6 +197,11 @@ export async function forward(options: ForwardOptions): Promise<ForwardResult> {
         break;
       }
       scanner.push(buffer);
+      if (captureError && errorBytes < MAX_ERROR_BYTES) {
+        const slice = buffer.subarray(0, MAX_ERROR_BYTES - errorBytes);
+        errorChunks.push(slice);
+        errorBytes += slice.length;
+      }
       if (!res.write(buffer)) {
         // Backpressure. Ignoring this buffers the whole conversation in memory.
         await once(res, "drain");
@@ -201,5 +217,6 @@ export async function forward(options: ForwardOptions): Promise<ForwardResult> {
     usage: scanner.usage,
     modelConfirmed: scanner.model,
     clientAborted,
+    errorBody: captureError ? Buffer.concat(errorChunks).toString("utf8") : null,
   };
 }

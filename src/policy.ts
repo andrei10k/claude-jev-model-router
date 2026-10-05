@@ -81,6 +81,39 @@ export function clampOutputTokens(model: string, maxTokens: number | null): numb
   return ceiling;
 }
 
+/**
+ * Why `model` cannot serve this request, or null when nothing in the body is
+ * known to be beyond it.
+ *
+ * The client writes a request for the model it asked for, so anything the
+ * target model lacks turns a routing decision into a dead agent: a downgraded
+ * request came back as "400 role 'system' is not supported on this model". A
+ * blocked rewrite keeps the caller's model, which is what it asked for anyway.
+ */
+function unservableBy(model: string, ctx: RequestContext): string | null {
+  if (ctx.systemRoleIndexes.length > 0 && familyOf(model) === "haiku") {
+    return `${model} rejects a system-role message (messages ${ctx.systemRoleIndexes.join(",")})`;
+  }
+  return null;
+}
+
+/** Statuses that mean "this model cannot serve what the client sent". */
+const REJECTION_STATUS = 400;
+
+/** The upstream's own words for a refusal, without the per-request id. */
+function refusalKey(status: number, errorBody: string | null): string | null {
+  if (status !== REJECTION_STATUS) return null;
+  const raw = errorBody ?? "";
+  try {
+    const parsed = JSON.parse(raw) as { error?: { message?: unknown } };
+    const message = parsed.error?.message;
+    if (typeof message === "string" && message !== "") return message;
+  } catch {
+    // Not JSON. Fall back to the raw text below.
+  }
+  return raw === "" ? "(no body)" : raw.slice(0, 200);
+}
+
 export type DecisionSource = "passthrough" | "rule" | "router" | "sticky";
 
 export interface Decision {
@@ -92,6 +125,8 @@ export interface Decision {
   margin: number | null;
   routerMs: number | null;
   routerError: string | null;
+  /** Why the chosen model could not serve the request, or null. */
+  blocked: string | null;
   /** True when the decision was computed but NOT applied (observe mode). */
   observe: boolean;
 }
@@ -107,6 +142,7 @@ export function decisionLogFields(decision: Decision): Record<string, unknown> {
     router_margin: decision.margin === null ? null : Math.round(decision.margin * 1e4) / 1e4,
     router_ms: decision.routerMs === null ? null : Math.round(decision.routerMs * 10) / 10,
     router_error: decision.routerError,
+    blocked: decision.blocked,
   };
 }
 
@@ -128,6 +164,15 @@ export class Policy {
   private readonly config: Config;
   private readonly router: TierRouter;
   private readonly sticky = new Map<string, { tier: string; at: number }>();
+  /**
+   * Targets that have rejected a request this proxy rewrote. Clients gain
+   * capabilities faster than any proxy can track, so the learned list is what
+   * keeps an unknown one from killing every agent in turn: the first rejection
+   * costs one request, the rest go nowhere near that model.
+   */
+  private readonly rejectedTargets = new Set<string>();
+  /** How many times this exact refusal has been seen. */
+  private readonly refusals = new Map<string, number>();
 
   constructor(config: Config, router: TierRouter) {
     this.config = config;
@@ -349,6 +394,32 @@ export class Policy {
     return this.sticky.size;
   }
 
+  /** Models that refused a rewritten request, for `healthz` and the log. */
+  get suspendedTargets(): string[] {
+    return [...this.rejectedTargets];
+  }
+
+  /**
+   * Record that `model` refused a request the proxy sent it. Returns true when
+   * the refusal has now repeated, so the caller can log and stop using it.
+   *
+   * One refusal is not a verdict. The client retries with the rejected
+   * capability removed and usually succeeds, so a single rejection suspends
+   * nothing. The same refusal twice means the client could not fix it, and the
+   * next agent gets the model it asked for instead of dying the same way.
+   */
+  noteRejection(model: string, status: number, errorBody: string | null): boolean {
+    const key = refusalKey(status, errorBody);
+    if (key === null || this.rejectedTargets.has(model)) return false;
+
+    const seen = (this.refusals.get(key) ?? 0) + 1;
+    this.refusals.set(key, seen);
+    if (seen < 2) return false;
+
+    this.rejectedTargets.add(model);
+    return true;
+  }
+
   private explainNoRoute(
     tier: string | null,
     margin: number | null,
@@ -394,31 +465,44 @@ export class Policy {
         margin: null,
         routerMs,
         routerError,
+        blocked: null,
         observe,
       };
     }
 
-    const rewritten = resolved !== incoming;
+    // A model that cannot serve the body kills the request outright, so the
+    // caller's model stands. The tier is still remembered: the next turn would
+    // reach the same verdict, and re-asking the router every turn is worse.
+    const blocker =
+      unservableBy(resolved, ctx) ??
+      (this.rejectedTargets.has(resolved) ? `${resolved} refused an earlier rewritten request` : null);
+    const rewritten = blocker === null && resolved !== incoming;
     const applied = rewritten && !observe;
     if (this.config.policy.sticky && tier !== null && !observe) {
       this.remember(stickyKey(ctx), tier);
+    }
+
+    let note: string;
+    if (blocker !== null) {
+      note = `${observe ? "observe: " : ""}${blocker}; kept ${incoming} (${reason})`;
+    } else if (observe) {
+      note = rewritten
+        ? `observe: would rewrite to ${resolved} (${reason})`
+        : `observe: no rewrite needed (${reason}; already on ${resolved})`;
+    } else {
+      note = rewritten ? reason : `${reason}; already on ${resolved}`;
     }
 
     return {
       modelOut: applied ? resolved : incoming,
       rewritten: applied,
       tier,
-      reason: observe
-        ? rewritten
-          ? `observe: would rewrite to ${resolved} (${reason})`
-          : `observe: no rewrite needed (${reason}; already on ${resolved})`
-        : rewritten
-          ? reason
-          : `${reason}; already on ${resolved}`,
+      reason: note,
       source,
       margin,
       routerMs,
       routerError,
+      blocked: blocker,
       observe,
     };
   }
@@ -433,6 +517,7 @@ export class Policy {
       margin: null,
       routerMs: null,
       routerError: null,
+      blocked: null,
       observe: false,
     };
   }

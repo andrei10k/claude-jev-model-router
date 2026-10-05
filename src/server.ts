@@ -2,9 +2,18 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 
 import type { TierRouter } from "./classify.js";
 import { describeConfig, type Config } from "./config.js";
-import { buildContext, isSubagent, parseJsonBody, serialiseBody } from "./context.js";
+import {
+  AGENT_HEADER,
+  buildContext,
+  headerValue,
+  hoistSystemMessage,
+  isSubagent,
+  parseJsonBody,
+  serialiseBody,
+  stripUnsupported,
+} from "./context.js";
 import type { DecisionLog } from "./decisions.js";
-import { decisionLogFields, clampOutputTokens, type Decision, type Policy } from "./policy.js";
+import { decisionLogFields, familyOf, clampOutputTokens, type Decision, type Policy } from "./policy.js";
 import { forward, UpstreamUnreachable } from "./relay.js";
 
 /**
@@ -50,6 +59,7 @@ async function handle(
       upstream: deps.config.upstream,
       routing_enabled: deps.config.policy.enabled,
       router: deps.router.name,
+      downgrade_suspended: deps.policy.suspendedTargets,
       config: describeConfig(deps.config),
     });
     return;
@@ -83,12 +93,27 @@ async function handleInference(
 ): Promise<void> {
   const started = performance.now();
   const raw = await readBody(req);
-  const body = parseJsonBody(raw);
+  let body = parseJsonBody(raw);
+  let payload = raw;
+
+  // Reshaping the request is off by default, and subagents only: the main
+  // conversation is not ours to rearrange.
+  if (
+    deps.config.policy.hoistSystemMessages &&
+    headerValue(req.headers, AGENT_HEADER) !== null &&
+    body !== null
+  ) {
+    const hoisted = hoistSystemMessage(body);
+    if (hoisted !== null) {
+      body = hoisted;
+      payload = serialiseBody(body);
+    }
+  }
+
   const ctx = buildContext({ headers: req.headers, body, bodyBytes: raw.length });
 
   let modelOut = ctx.modelIn;
   let logFields: Record<string, unknown>;
-  let payload = raw;
 
   if (kind === "count_tokens") {
     modelOut = deps.policy.modelForTokens(ctx);
@@ -118,6 +143,9 @@ async function handleInference(
     tool_count: ctx.toolCount,
     tool_class: ctx.toolClass,
     max_tokens: ctx.maxTokens,
+    system_role_indexes: ctx.systemRoleIndexes,
+    message_shape: ctx.messageShape,
+    betas: headerValue(req.headers, "anthropic-beta"),
     turn_index: ctx.turnIndex,
     stream: ctx.stream,
     ...logFields,
@@ -134,11 +162,20 @@ async function handleInference(
       res,
     });
 
+    // A model that refuses what the client sends has no business receiving that
+    // request again: stop routing to it and let the next agent work.
+    const suspended =
+      kind === "messages" &&
+      modelOut !== ctx.modelIn &&
+      deps.policy.noteRejection(modelOut, result.status, result.errorBody);
+
     deps.log.write({
       ...base,
       status: result.status,
       model_confirmed: result.modelConfirmed,
       client_aborted: result.clientAborted,
+      error_body: result.errorBody,
+      downgrade_suspended: suspended ? modelOut : undefined,
       latency_ms: round(performance.now() - started),
       usage: result.usage,
     });
@@ -161,10 +198,10 @@ async function handleInference(
 
 /** Rewrite the request body for the model the policy chose, and return the bytes to forward.
  *
- * `max_tokens` is the one field besides `model` this proxy is allowed to touch.
- * The caller sizes it for the model it asked for, so a downgrade can carry a
- * value the cheaper model rejects outright: "max_tokens: 128000 > 64000".
- * Lowering it is the difference between a routed answer and a 400.
+ * Besides `model`, a downgrade adjusts only what the target model would reject
+ * outright: `max_tokens` above its output ceiling ("max_tokens: 128000 > 64000"),
+ * and capabilities it does not have, such as adaptive thinking and the effort
+ * parameter. Everything else is relayed untouched.
  */
 function rewriteBody(
   body: Record<string, unknown>,
@@ -178,6 +215,8 @@ function rewriteBody(
     body["max_tokens"] = capped;
     logFields["max_tokens_out"] = capped;
   }
+  const stripped = stripUnsupported(body, familyOf(decision.modelOut));
+  if (stripped !== null) logFields["stripped"] = stripped;
   return serialiseBody(body);
 }
 

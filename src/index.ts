@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 
 import { buildRouter } from "./classify.js";
-import { describeConfig, expandHome, loadConfig, type Config, type RouterName } from "./config.js";
+import { DEFAULT_CONFIG, describeConfig, expandHome, loadConfig, type Config, type RouterName } from "./config.js";
 import { DecisionLog } from "./decisions.js";
 import { loadDotEnv } from "./envfile.js";
 import { Policy } from "./policy.js";
@@ -23,7 +23,8 @@ Subcommands
                              file of per-million-token USD prices.
 
 Options (proxy)
-  -c, --config <path>        TOML config file (see default.toml)
+  -c, --config <path>        TOML config file. Without this, ~/.claude-model-router/config.toml
+                             is used when it exists, so a setting needs no flags.
       --port <n>             Listen port                    (default 8787)
       --host <addr>          Listen address                 (default 127.0.0.1)
       --upstream <url>       Upstream base URL       (default https://api.anthropic.com)
@@ -35,6 +36,13 @@ Options (proxy)
       --subagent-tier <tier> Static tier for subagents, used as the router's fallback (default cheap)
       --main-tier <tier>     Tier for the main conversation (default: leave alone)
       --main-router          Let the router decide the main conversation
+      --hoist-system-messages
+                             Move a mid-conversation system prompt (Claude Code's
+                             newer layout) into the 'system' field so the cheap
+                             model can serve the request. Off by default: it
+                             reshapes the request. See default.toml.
+      --no-hoist-system-messages
+                             Force the reshape off, overriding the config file.
       --print-config         Print the resolved config and exit
       --env KEY=VALUE        Set an environment variable inline (repeatable),
                              e.g. --env TYPESAFE_API_KEY=apikey_...
@@ -48,7 +56,7 @@ Environment
 
 Usage with Claude Code
   # 1. start the proxy (in its own terminal)
-  claude-jev-model-router --config ~/.claude-model-router/config.toml
+  claude-jev-model-router --enable
 
   # 2. point Claude Code at it
   ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
@@ -70,6 +78,7 @@ interface CliOptions {
   subagentTier: string | null;
   mainTier: string | null;
   mainRouter: boolean | null;
+  hoistSystemMessages: boolean | null;
   envVars: Record<string, string>;
   printConfig: boolean;
   help: boolean;
@@ -88,6 +97,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
     subagentTier: null,
     mainTier: null,
     mainRouter: null,
+    hoistSystemMessages: null,
     envVars: {},
     printConfig: false,
     help: false,
@@ -155,6 +165,12 @@ function parseArgs(argv: readonly string[]): CliOptions {
       case "--main-router":
         options.mainRouter = true;
         break;
+      case "--hoist-system-messages":
+        options.hoistSystemMessages = true;
+        break;
+      case "--no-hoist-system-messages":
+        options.hoistSystemMessages = false;
+        break;
       case "--env": {
         const pair = next(index, arg);
         const eq = pair.indexOf("=");
@@ -188,10 +204,18 @@ function applyOverrides(config: Config, options: CliOptions): Config {
   if (options.subagentTier !== null) config.policy.subagentTier = options.subagentTier;
   if (options.mainTier !== null) config.policy.mainTier = options.mainTier;
   if (options.mainRouter !== null) config.policy.mainRouter = options.mainRouter;
+  if (options.hoistSystemMessages !== null) {
+    config.policy.hoistSystemMessages = options.hoistSystemMessages;
+  }
   return config;
 }
 
-function banner(config: Config, router: string, envFile: string | null): string {
+function banner(
+  config: Config,
+  router: string,
+  envFile: string | null,
+  configPath: string | null,
+): string {
   const baseUrl = `http://${config.host}:${config.port}`;
   const mode = config.policy.enabled ? "ROUTING ENABLED" : "OBSERVE ONLY (no rewrite)";
   const subagentNote =
@@ -207,6 +231,7 @@ function banner(config: Config, router: string, envFile: string | null): string 
     `  subagent -> ${subagentNote}`,
     `  upstream ${config.upstream}`,
     `  log      ${config.log ?? "(disabled)"}`,
+    configPath === null ? null : `  config   ${configPath}`,
     envFile === null ? null : `  env      ${envFile}`,
   ].filter((line): line is string => line !== null);
 
@@ -215,6 +240,9 @@ function banner(config: Config, router: string, envFile: string | null): string 
     lines.push(
       `  main     -> ${config.policy.mainTier ?? (config.policy.mainRouter ? "(router)" : "(leave alone)")}`,
     );
+    if (config.policy.hoistSystemMessages) {
+      lines.push("  hoist    system messages -> moved into the 'system' field");
+    }
   } else {
     lines.push("  Nothing will be rewritten. Every decision is logged, including what");
     lines.push("  the router would choose. Add --enable when the log looks right.");
@@ -256,6 +284,7 @@ async function main(): Promise<void> {
   let config: Config;
   let router;
   let envFile: string | null = null;
+  let configPath: string | null = null;
   try {
     // .env first, so a real exported variable can still override it.
     envFile = loadDotEnv([".env", expandHome("~/.claude-model-router/.env")]);
@@ -264,7 +293,12 @@ async function main(): Promise<void> {
     for (const [key, value] of Object.entries(options.envVars)) {
       process.env[key] = value;
     }
-    config = applyOverrides(loadConfig({ configPath: options.configPath }), options);
+    // --config wins; otherwise the standard path is used if it is there, so a
+    // setting does not have to be repeated on every start. Command-line flags
+    // still override whatever the file says.
+    const standard = expandHome(DEFAULT_CONFIG);
+    configPath = options.configPath ?? (existsSync(standard) ? standard : null);
+    config = applyOverrides(loadConfig({ configPath }), options);
     router = buildRouter({ config });
   } catch (error) {
     process.stderr.write(
@@ -296,7 +330,7 @@ async function main(): Promise<void> {
 
   if (process.exitCode === 1) return;
 
-  process.stdout.write(banner(config, router.name, envFile));
+  process.stdout.write(banner(config, router.name, envFile, configPath));
 
   const shutdown = (): void => {
     process.stdout.write("\n  shutting down\n");

@@ -48,7 +48,15 @@ interface LogRecord {
   model_in?: string;
   model_out?: string;
   rewritten?: boolean;
+  blocked?: string | null;
   usage?: Record<string, unknown>;
+}
+
+/** Usage the upstream actually reported. A rejected request logs `{}`. */
+function reportedUsage(record: LogRecord): Record<string, unknown> | null {
+  const usage = record.usage;
+  if (!usage || Object.keys(usage).length === 0) return null;
+  return usage;
 }
 
 export function savingsReport(argv: readonly string[]): void {
@@ -104,14 +112,25 @@ export function savingsReport(argv: readonly string[]): void {
     let tokensIn = 0;
     let tokensOut = 0;
     let unpriced = 0;
+    let unused = 0;
+    let refused = 0;
     const byRoute: Record<string, number> = {};
 
     for (const r of records) {
-      if (r.kind !== "messages" || !r.usage) continue;
+      if (r.kind !== "messages") continue;
       const ts = Date.parse(r.ts ?? "");
       if (ts < w.cutoff) continue;
       calls += 1;
+      if (r.blocked) refused += 1;
       if (!r.rewritten) continue;
+
+      const usage = reportedUsage(r);
+      if (usage === null) {
+        // Rewritten but rejected: there is nothing to price, and counting it
+        // as a $0.00 rewrite is how a report hides a broken route.
+        unused += 1;
+        continue;
+      }
 
       const from = priceOf(r.model_in);
       const to = priceOf(r.model_out);
@@ -121,16 +140,16 @@ export function savingsReport(argv: readonly string[]): void {
         continue;
       }
 
-      const actual = costUSD(to, r.usage);
-      const counterfactual = costUSD(from, r.usage);
+      const actual = costUSD(to, usage);
+      const counterfactual = costUSD(from, usage);
       const delta = counterfactual - actual;
       saved += delta;
       rewrites += 1;
       tokensIn +=
-        ((r.usage["input_tokens"] as number) ?? 0) +
-        ((r.usage["cache_read_input_tokens"] as number) ?? 0) +
-        ((r.usage["cache_creation_input_tokens"] as number) ?? 0);
-      tokensOut = (r.usage["output_tokens"] as number) ?? 0;
+        ((usage["input_tokens"] as number) ?? 0) +
+        ((usage["cache_read_input_tokens"] as number) ?? 0) +
+        ((usage["cache_creation_input_tokens"] as number) ?? 0);
+      tokensOut += (usage["output_tokens"] as number) ?? 0;
 
       const key = `${shortName(r.model_in)} -> ${shortName(r.model_out)}`;
       byRoute[key] = (byRoute[key] ?? 0) + delta;
@@ -141,8 +160,14 @@ export function savingsReport(argv: readonly string[]): void {
     console.log(
       `  rewrites priced:   ${rewrites}${unpriced ? ` (+${unpriced} with unknown pricing)` : ""}`,
     );
+    if (refused > 0) {
+      console.log(`  rewrites refused:  ${refused} (target model cannot serve the body)`);
+    }
+    if (unused > 0) {
+      console.log(`  rewrites unpriced: ${unused} (upstream rejected them, no usage to price)`);
+    }
     if (rewrites === 0 && unpriced === 0) {
-      console.log("  savings: $0.00 (no rewrites)");
+      console.log("  savings: $0.00 (no priced rewrites)");
       continue;
     }
     console.log(`  tokens rerouted:   ${fmtInt(tokensIn)} in / ${fmtInt(tokensOut)} out`);
@@ -155,5 +180,15 @@ export function savingsReport(argv: readonly string[]): void {
 
   if (unknownModels.size > 0) {
     console.log(`\nNOTE: no prices for: ${[...unknownModels].join(", ")}. Add them with --pricing.`);
+  }
+
+  // Why a window can look empty even though the proxy is busy: nothing has
+  // been rerouted since this timestamp, whatever the rest of the log says.
+  const priced = records.filter((r) => r.rewritten && reportedUsage(r) !== null);
+  const last = priced[priced.length - 1];
+  if (last?.ts !== undefined) {
+    const days = (Date.now() - Date.parse(last.ts)) / 864e5;
+    const ago = days < 1 ? "today" : `${Math.floor(days)} day(s) ago`;
+    console.log(`\nlast rewrote-and-priced request: ${last.ts} (${ago})`);
   }
 }

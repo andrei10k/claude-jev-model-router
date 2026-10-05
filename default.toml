@@ -1,7 +1,9 @@
 # claude-model-router configuration
 #
-# Copy to ~/.claude-model-router/config.toml and edit, then run:
-#   claude-model-router --config ~/.claude-model-router/config.toml
+# Copy to ~/.claude-model-router/config.toml and edit. That path is picked up
+# automatically, so no flag is needed:
+#   claude-jev-model-router --enable
+# Any flag still overrides the file.
 
 upstream = "https://api.anthropic.com"
 host = "127.0.0.1"
@@ -96,3 +98,20 @@ router_min_margin_mutation = 0.3
 # Fallback tier when the router is unavailable or below margin. "mid" for
 # mutation-capable agents (fail toward caution); subagent_tier for the rest.
 # Hardcode via policy below if you want to override -- see policy.ts.
+
+# --- Mid-conversation system prompts (opt-in, experimental) -----------------
+#
+# Later Claude Code builds deliver the agent's system prompt as a `system` role
+# entry inside `messages` (beta mid-conversation-system). The cheap model rejects
+# any system-role message, so with this off every subagent request is kept on the
+# caller's model and nothing is saved; with it on, the proxy moves the system
+# entries that sit at the head of `messages` into the top-level `system` field
+# before routing. Both client layouts are covered, whichever of the two places the
+# prompt arrives in.
+#
+# It rewrites part of the request, which is why it is off by default. Subagents
+# only, head entries only, and every request of that shape rather than just the
+# downgraded ones: the shape must stay identical across a conversation or
+# preserved-thinking signatures stop matching. Mid-conversation steering is left
+# where the client put it, and those requests stay on the caller's model.
+hoist_system_messages = false

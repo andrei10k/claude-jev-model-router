@@ -13,6 +13,8 @@ export const DEFAULT_TIERS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 export const DEFAULT_LOG = "~/.claude-model-router/decisions.jsonl";
+/** Picked up without --config when it exists, so settings need no flags. */
+export const DEFAULT_CONFIG = "~/.claude-model-router/config.toml";
 export const DEFAULT_UPSTREAM = "https://api.anthropic.com";
 
 export interface PolicyConfig {
@@ -32,6 +34,8 @@ export interface PolicyConfig {
   routerMinMargin: number;
   /** Stricter margin for downgrading to cheap a subagent with mutation tools. */
   routerMinMarginMutation: number;
+  /** Opt-in: move a lone mid-conversation system prompt into the `system` field. */
+  hoistSystemMessages: boolean;
 }
 
 export interface Config {
@@ -63,6 +67,7 @@ export function defaultPolicy(): PolicyConfig {
     routerTimeoutMs: 3000,
     routerMinMargin: 0.15,
     routerMinMarginMutation: 0.3,
+    hoistSystemMessages: false,
   };
 }
 
@@ -99,6 +104,7 @@ const POLICY_KEYS = [
   "router_timeout_ms",
   "router_min_margin",
   "router_min_margin_mutation",
+  "hoist_system_messages",
 ] as const;
 
 const ROUTER_NAMES: readonly RouterName[] = ["none", "head", "jev"];
@@ -173,6 +179,11 @@ function parsePolicy(raw: unknown): PolicyConfig {
     table["router_min_margin_mutation"],
     "router_min_margin_mutation",
     policy.routerMinMarginMutation,
+  );
+  policy.hoistSystemMessages = asBoolean(
+    table["hoist_system_messages"],
+    "hoist_system_messages",
+    policy.hoistSystemMessages,
   );
 
   const router = asString(table["router"], "router");
@@ -260,6 +271,7 @@ export function describeConfig(config: Config): Record<string, unknown> {
       router_timeout_ms: policy.routerTimeoutMs,
       router_min_margin: policy.routerMinMargin,
       router_min_margin_mutation: policy.routerMinMarginMutation,
+      hoist_system_messages: policy.hoistSystemMessages,
     },
   };
 }

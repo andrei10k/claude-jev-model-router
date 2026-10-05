@@ -12,7 +12,7 @@ This proxy does the judgement. Each subagent request is classified by [TypeSafe'
 
 There is no prompt asking an LLM "how hard is this?" and no hardcoded rules like "rename → Haiku". The decision is deterministic code over calibrated probabilities:
 
-1. **Deterministic gate first.** The proxy looks at context it can trust outright: is this a subagent (`x-claude-code-agent-id` header), has this subagent already been assigned a tier, is the model pinned by the user (`never_reroute`, `/model` choices)? Only a first-time subagent reaches the classifier.
+1. **Deterministic gate first.** The proxy looks at context it can trust outright: is this a subagent (`x-claude-code-agent-id` header), has this subagent already been assigned a tier, is the model pinned by the user (`never_reroute`, `/model` choices), does the request body carry something the cheap model refuses (a `system`-role message, an output budget past its ceiling)? Only a first-time subagent reaches the classifier.
 2. **Tool-set gates.** The request's tool list says what the subagent can do to your repo, and that cannot be gamed by how the task is worded:
    - **Read-only** tool set (no Write/Edit, no Bash) → capped at the cheap tier without consulting Jev. Such an agent physically cannot modify anything, so no prompt can make the work harder than a lookup.
    - **Exec** tool set (Bash but no Write/Edit — Explore agents, which use Bash for grep) → Jev decides with the normal confidence bar; router failure falls back to cheap. Bash without edit tools is search, not repo mutation.
@@ -37,7 +37,7 @@ Claude Code ──▶ claude-jev-model-router ──▶ api.anthropic.com
                      └─▶ api.typesafe.ai (Jev, first request of each subagent only)
 ```
 
-The proxy listens on `127.0.0.1:8787` and answers the endpoints Claude Code calls (`/v1/messages`, `/v1/messages/count_tokens`, `/v1/models`). It rewrites **only** the `model` field and relays everything else byte-for-byte - `system`, `tools`, `messages`, `cache_control`, all `anthropic-*` headers - then streams the response back unbuffered. Main-thread requests pass through without any classification at all.
+The proxy listens on `127.0.0.1:8787` and answers the endpoints Claude Code calls (`/v1/messages`, `/v1/messages/count_tokens`, `/v1/models`). It rewrites `model`, and lowers `max_tokens` only when the caller's value exceeds the target model's output ceiling. Everything else is relayed byte-for-byte - `system`, `tools`, `messages`, `cache_control`, all `anthropic-*` headers - and the response streams back unbuffered. Main-thread requests pass through without any classification at all.
 
 ## Quick start
 
@@ -103,18 +103,19 @@ Prefer to run from source? Clone the repo, `npm install && npm run build`, then 
 | Key | Default | What it does |
 |---|---|---|
 | `policy.enabled` | `false` | Observe-only vs. actually rewriting. `--enable` overrides. |
-| `policy.subagent_router` | `"jev"` | Jev decides subagent tiers. `"none"` = static tier. `"head"` = local regex cues, no network. |
+| `policy.subagent_router` | `"none"` | Jev decides subagent tiers. `"none"` = static tier. `"head"` = local regex cues, no network. |
 | `policy.subagent_tier` | `"cheap"` | Fallback tier for read-only/exec subagents. Mutation-capable ones fall back to `mid`. |
 | `policy.main_router` | `false` | Leave off. The main thread is deliberately out of the router's reach. |
 | `policy.router_timeout_ms` | `3000` | Jev budget per call. On timeout: fall back to the tier above. |
 | `policy.router_min_margin` | `0.15` | Verdicts closer than this count as "unsure". |
 | `policy.router_min_margin_mutation` | `0.3` | Wider bar for downgrading a mutation-capable subagent to cheap. |
+| `policy.hoist_system_messages` | `false` | Move the system prompt out of `messages` so the cheap tier can serve it. See below. |
 | `tiers.*` | haiku / sonnet / opus | Tier name → concrete model ID. Versioned IDs, not aliases. |
 
 ## What it doesn't do
 
 - It doesn't read your files or send anything anywhere except your configured upstream and the TypeSafe classification call.
-- It doesn't modify prompts, tools, or system content - only `model`.
+- It doesn't modify prompts, tools, or message content. It rewrites `model`, and lowers `max_tokens` when the caller asked for more output than the target model allows. The one exception is `hoist_system_messages`, off by default.
 - It doesn't touch credentials. Your existing login passes straight through.
 - It doesn't route the main conversation, ever, unless you set `main_tier` or `main_router` yourself.
 
@@ -122,13 +123,28 @@ Prefer to run from source? Clone the repo, `npm install && npm run build`, then 
 
 The proxy enforces the parts of Anthropic's [gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol) that are easy to get quietly wrong, and the test suite pins each one:
 
-- only `model` is rewritten; mangled `cache_control` makes the whole conversation bill uncached, with no error to tell you
-- `anthropic-beta` is forwarded as an open list - new releases add beta values, and an allowlist breaks them
+- it touches `model`, and `max_tokens` when the target model's ceiling is lower; mangled `cache_control` makes the whole conversation bill uncached, with no error to tell you
+- a rewrite is dropped when the target model cannot serve the body it was handed: a `system`-role message is a 400 on Haiku, so the caller's model stands instead of the request dying
+- a downgrade carries no capabilities the target is known to reject (adaptive thinking, the effort parameter), so the first attempt is the one that counts- `anthropic-beta` is forwarded as an open list - new releases add beta values, and an allowlist breaks them
 - responses stream unbuffered with backpressure propagated (Claude Code aborts after 300s of silence)
 - error bodies are forwarded unmodified, because retry logic matches on their wording
 - the relay uses `undici.request` rather than `fetch`, which decompresses the body while still claiming `content-encoding: gzip` - a corruption trap
 
-80 tests cover this, including byte-for-byte stream relay and header-rebuild assertions.
+106 tests cover this, including byte-for-byte stream relay and header-rebuild assertions.
+## Claude Code's mid-conversation system prompt
+
+Current Claude Code builds deliver the system prompt as a `system` role entry inside `messages` (beta `mid-conversation-system`); older ones use the top-level `system` field. Haiku rejects any system-role message, so on the newer layout every subagent request stays on the model you chose and nothing is saved.
+
+Set `hoist_system_messages = true` (or start with `--hoist-system-messages`) and the proxy moves the head system entries into the top-level `system` field before routing. Both layouts are covered, wherever the prompt sits before the conversation starts. Subagents only, and only the head: a system entry after the first assistant message is mid-conversation steering, and relocating it would change the prefix the upstream already validated against its thinking signatures, so those requests stay on your model instead.
+
+On every downgrade, whether or not the hoist is on, the proxy also removes the capabilities the target model rejects: adaptive thinking and the effort parameter, which Haiku answers with a 400 otherwise. A live client that used to spend two rejected attempts per conversation now goes straight through:
+
+```
+sub  sonnet-5-5 -> haiku-4-5  200  model_confirmed claude-haiku-4-5-20251001
+                                  stripped ["thinking","output_config.effort"]
+```
+
+If a future capability the cheap tier refuses shows up, Claude Code's own retry recovery still covers it, at one round trip, and the rejection lands in the log as `error_body`. The main conversation is never reshaped.
 
 ## Cost model
 

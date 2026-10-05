@@ -23,6 +23,8 @@ interface Received {
   body: Record<string, unknown>;
 }
 
+const REJECTION = "role 'system' is not supported on this model";
+
 const SSE_CHUNKS = [
   "event: message_start\n",
   `data: ${JSON.stringify({
@@ -138,6 +140,24 @@ beforeAll(async () => {
       } catch {
         // Leave it empty; the assertion will report the mismatch.
       }
+
+      // Marked path: answer like the API does when it rejects a request.
+      if ((req.url ?? "").includes("fail=1")) {
+        const body = Buffer.from(
+          JSON.stringify({
+            type: "error",
+            error: { type: "invalid_request_error", message: REJECTION },
+          }),
+          "utf8",
+        );
+        res.writeHead(400, {
+          "content-type": "application/json",
+          "content-length": String(body.length),
+        });
+        res.end(body);
+        return;
+      }
+
       received.push({
         model: typeof parsed["model"] === "string" ? parsed["model"] : "",
         headers: Object.fromEntries(
@@ -275,6 +295,112 @@ describe("relay end to end", () => {
     // The session was already put on the cheap tier, so a mid-tier incoming
     // model is pulled to cheap rather than honoured.
     expect(received[0]?.model).toBe("claude-haiku-4-5");
+  });
+
+  it("stops downgrading a model after the upstream rejects one of its requests", async () => {
+    const config = buildConfig();
+    const port = await startProxy(config);
+
+    // The stub answers this path with a 400, like an unsupported capability.
+    received = [];
+    for (const attempt of [1, 2]) {
+      await post(
+        port,
+        "/v1/messages?fail=1",
+        { model: "claude-sonnet-5-5", messages: [] },
+        { "x-claude-code-agent-id": `agent-rejected-${attempt}` },
+      );
+    }
+    expect(received).toHaveLength(0);
+
+    const entry = (await readLog(logPath, 1)).find(
+      (line) => line["agent_id"] === "agent-rejected-2",
+    );
+    expect(entry?.["downgrade_suspended"]).toBe("claude-haiku-4-5");
+
+    // The next agent is not sent there again.
+    received = [];
+    await post(
+      port,
+      "/v1/messages",
+      { model: "claude-sonnet-5-5", messages: [] },
+      { "x-claude-code-agent-id": "agent-after" },
+    );
+    expect(received[0]?.model).toBe("claude-sonnet-5-5");
+  });
+
+  it("relays a rejection untouched and keeps its text in the log", async () => {    received = [];
+    const result = await post(
+      proxyPort,
+      "/v1/messages?fail=1",
+      { model: "claude-sonnet-5-5", messages: [] },
+      { "x-claude-code-agent-id": "agent-rejected" },
+    );
+
+    // Claude Code's retry logic matches on the wording, so the bytes it sees
+    // have to be the upstream's.
+    expect(result.status).toBe(400);
+    expect(result.text).toContain(REJECTION);
+
+    // The log is where the next unexplained 400 gets diagnosed.
+    const entry = (await readLog(logPath, 1)).find(
+      (line) => line["agent_id"] === "agent-rejected",
+    );
+    expect(entry?.["status"]).toBe(400);
+    expect(String(entry?.["error_body"])).toContain(REJECTION);
+  });
+
+  it("hoists the system prompt when opted in, so the downgrade survives", async () => {
+    const config = buildConfig({ hoistSystemMessages: true });
+    const port = await startProxy(config);
+    received = [];
+
+    await post(
+      port,
+      "/v1/messages",
+      {
+        model: "claude-sonnet-5-5",
+        max_tokens: 128_000,
+        thinking: { type: "adaptive" },
+        output_config: { effort: "high" },
+        messages: [
+          { role: "user", content: "list the files" },
+          { role: "system", content: [{ type: "text", text: "you are Explore" }] },
+        ],
+      },
+      { "x-claude-code-agent-id": "agent-hoisted" },
+    );
+
+    const seen = received[0];
+    expect(seen?.model).toBe("claude-haiku-4-5");
+    expect(seen?.body["system"]).toEqual([{ type: "text", text: "you are Explore" }]);
+    expect(seen?.body["messages"]).toEqual([{ role: "user", content: "list the files" }]);
+    expect(seen?.body["max_tokens"]).toBe(64_000);
+    // Haiku rejects both of these outright, so the first attempt has to arrive
+    // without them rather than relying on the client to retry.
+    expect(seen?.body["thinking"]).toBeUndefined();
+    expect(seen?.body["output_config"]).toBeUndefined();
+
+    const entry = (await readLog(logPath, 1)).find((line) => line["agent_id"] === "agent-hoisted");
+    expect(entry?.["stripped"]).toEqual(["thinking", "output_config.effort"]);
+  });
+
+  it("never reshapes the main conversation, even with the opt-in on", async () => {
+    const config = buildConfig({ hoistSystemMessages: true });
+    const port = await startProxy(config);
+    received = [];
+
+    // Same shape, no agent header: the main thread is not ours to rearrange.
+    await post(port, "/v1/messages", {
+      model: "claude-sonnet-5-5",
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "system", content: [{ type: "text", text: "steering" }] },
+      ],
+    });
+
+    expect(received[0]?.body["system"]).toBeUndefined();
+    expect(received[0]?.body["messages"]).toHaveLength(2);
   });
 
   it("serves the connection-warming probe without touching upstream", async () => {
