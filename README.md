@@ -140,7 +140,7 @@ One Jev call per subagent, about 400 tokens. That's the entire overhead. Everyth
 claude-jev-model-router savings
 ```
 
-Reads the decision log and prints what was saved over the last 1, 7 and 30 days — per route (`sonnet-5.5 -> haiku-4-5`) and in total. It's cache-aware (cached input at 10%, cache writes at 125%) and prices each rewrite both ways: what the tokens actually cost at the rerouted model vs. what they would have cost at the originally-requested model. Downgrades to a more expensive model count as negative savings, so the number is honest.
+Reads the decision log and prints what was saved over the last 1, 7 and 30 days — per route (`sonnet-5-5 -> haiku-4-5`) and in total. It's cache-aware (cached input at 10%, cache writes at 125%) and prices each rewrite both ways: what the tokens actually cost at the rerouted model vs. what they would have cost at the originally-requested model. Downgrades to a more expensive model count as negative savings, so the number is honest.
 
 Prices default to Anthropic's published list and can be overridden with a JSON file (`claude-jev-model-router savings --pricing my-prices.json`) — useful for max-tier subscription accounting or if Anthropic's prices move.
 

@@ -54,6 +54,33 @@ export function familyOf(model: string): string | null {
   return null;
 }
 
+/**
+ * Output-token ceiling per family, as the API enforces it. Claude Code sizes
+ * max_tokens for the model it asked for (128k on Sonnet/Opus), so a rewrite to
+ * Haiku forwards a value Haiku rejects: 400 "max_tokens: 128000 > 64000".
+ */
+const MAX_OUTPUT_TOKENS: Readonly<Record<string, number>> = Object.freeze({
+  opus: 128_000,
+  sonnet: 128_000,
+  haiku: 64_000,
+});
+
+/**
+ * max_tokens for `model`, or null when the request's own value already fits.
+ *
+ * Only ever lowers the value, and only when the target model's ceiling is
+ * known: a guestimate on an unrecognised ID risks truncating output, which is
+ * worse than forwarding a number the caller chose for its own model.
+ */
+export function clampOutputTokens(model: string, maxTokens: number | null): number | null {
+  if (maxTokens === null) return null;
+  const family = familyOf(model);
+  if (family === null) return null;
+  const ceiling = MAX_OUTPUT_TOKENS[family];
+  if (ceiling === undefined || maxTokens <= ceiling) return null;
+  return ceiling;
+}
+
 export type DecisionSource = "passthrough" | "rule" | "router" | "sticky";
 
 export interface Decision {

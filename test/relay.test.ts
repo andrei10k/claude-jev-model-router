@@ -70,7 +70,7 @@ describe("buildDownstreamHeaders", () => {
 
 const SSE = [
   "event: message_start",
-  'data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-5.5","usage":{"input_tokens":123,"cache_read_input_tokens":45}}}',
+  'data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-5-5","usage":{"input_tokens":123,"cache_read_input_tokens":45}}}',
   "",
   "event: content_block_delta",
   'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"café"}}',
@@ -88,7 +88,7 @@ describe("SseUsageScanner", () => {
     const scanner = new SseUsageScanner(true);
     scanner.push(Buffer.from(SSE, "utf8"));
 
-    expect(scanner.model).toBe("claude-sonnet-5.5");
+    expect(scanner.model).toBe("claude-sonnet-5-5");
     expect(scanner.usage["input_tokens"]).toBe(123);
     expect(scanner.usage["cache_read_input_tokens"]).toBe(45);
     expect(scanner.usage["output_tokens"]).toBe(67);
@@ -102,7 +102,7 @@ describe("SseUsageScanner", () => {
       scanner.push(bytes.subarray(offset, offset + 1));
     }
 
-    expect(scanner.model).toBe("claude-sonnet-5.5");
+    expect(scanner.model).toBe("claude-sonnet-5-5");
     expect(scanner.usage["input_tokens"]).toBe(123);
     expect(scanner.usage["output_tokens"]).toBe(67);
   });

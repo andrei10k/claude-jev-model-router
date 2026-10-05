@@ -8,8 +8,8 @@ export type RouterName = "none" | "head" | "jev";
 
 export const DEFAULT_TIERS: Readonly<Record<string, string>> = Object.freeze({
   cheap: "claude-haiku-4-5",
-  mid: "claude-sonnet-5.5",
-  premium: "claude-opus-5.5",
+  mid: "claude-sonnet-5-5",
+  premium: "claude-opus-5-5",
 });
 
 export const DEFAULT_LOG = "~/.claude-model-router/decisions.jsonl";

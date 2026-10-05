@@ -4,7 +4,7 @@ import type { TierRouter } from "./classify.js";
 import { describeConfig, type Config } from "./config.js";
 import { buildContext, isSubagent, parseJsonBody, serialiseBody } from "./context.js";
 import type { DecisionLog } from "./decisions.js";
-import { decisionLogFields, type Policy } from "./policy.js";
+import { decisionLogFields, clampOutputTokens, type Decision, type Policy } from "./policy.js";
 import { forward, UpstreamUnreachable } from "./relay.js";
 
 /**
@@ -102,8 +102,7 @@ async function handleInference(
     modelOut = decision.modelOut;
     logFields = decisionLogFields(decision);
     if (decision.rewritten && body !== null) {
-      body["model"] = decision.modelOut;
-      payload = serialiseBody(body);
+      payload = rewriteBody(body, decision, ctx.maxTokens, logFields);
     }
   }
 
@@ -158,6 +157,28 @@ async function handleInference(
 
     sendError(res, 502, message);
   }
+}
+
+/** Rewrite the request body for the model the policy chose, and return the bytes to forward.
+ *
+ * `max_tokens` is the one field besides `model` this proxy is allowed to touch.
+ * The caller sizes it for the model it asked for, so a downgrade can carry a
+ * value the cheaper model rejects outright: "max_tokens: 128000 > 64000".
+ * Lowering it is the difference between a routed answer and a 400.
+ */
+function rewriteBody(
+  body: Record<string, unknown>,
+  decision: Decision,
+  maxTokens: number | null,
+  logFields: Record<string, unknown>,
+): Buffer {
+  body["model"] = decision.modelOut;
+  const capped = clampOutputTokens(decision.modelOut, maxTokens);
+  if (capped !== null) {
+    body["max_tokens"] = capped;
+    logFields["max_tokens_out"] = capped;
+  }
+  return serialiseBody(body);
 }
 
 function modelCatalogue(config: Config): Array<Record<string, string>> {

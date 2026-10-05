@@ -69,12 +69,12 @@ describe("buildContext", () => {
   };
 
   it("pulls identity out of the Claude Code headers", () => {
-    const ctx = buildContext({ headers, body: { model: "claude-opus-5.5" }, bodyBytes: 10 });
+    const ctx = buildContext({ headers, body: { model: "claude-opus-5-5" }, bodyBytes: 10 });
 
     expect(ctx.sessionId).toBe("session-abc");
     expect(ctx.agentId).toBe("agent-xyz");
     expect(ctx.parentAgentId).toBe("agent-root");
-    expect(ctx.modelIn).toBe("claude-opus-5.5");
+    expect(ctx.modelIn).toBe("claude-opus-5-5");
     expect(isSubagent(ctx)).toBe(true);
     expect(stickyKey(ctx)).toBe("agent-xyz");
   });
@@ -82,7 +82,7 @@ describe("buildContext", () => {
   it("treats an absent agent header as the main conversation", () => {
     const ctx = buildContext({
       headers: { "x-claude-code-session-id": "s" },
-      body: { model: "claude-opus-5.5" },
+      body: { model: "claude-opus-5-5" },
       bodyBytes: 0,
     });
 
@@ -132,7 +132,7 @@ describe("parseJsonBody", () => {
 describe("serialiseBody", () => {
   it("round-trips without dropping fields", () => {
     const original = {
-      model: "claude-opus-5.5",
+      model: "claude-opus-5-5",
       system: [{ type: "text", text: "sys", cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: "hi" }],
       tools: [{ name: "Read" }],
